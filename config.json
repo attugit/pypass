@@ -1,0 +1,8 @@
+{
+  "endpoint.py": {
+    "host": "127.0.0.1",
+    "port": 14001,
+    "type": "server",
+    "workers": 3
+  }
+}
