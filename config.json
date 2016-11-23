@@ -4,5 +4,11 @@
     "port": 14001,
     "type": "server",
     "workers": 3
+  },
+  "client": {
+    "host": "127.0.0.1",
+    "port": 14001,
+    "type": "client",
+    "workers": 3
   }
 }
