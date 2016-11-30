@@ -8,7 +8,6 @@ from socket import socket
 from time import sleep
 import argparse
 import logging
-#from concurrent.futures import ThreadPoolExecutor as Executor
 from concurrent.futures import ThreadPoolExecutor as Executor
 
 
@@ -49,34 +48,63 @@ class argdict(dict):
     __setattr__ = dict.__setitem__
     __getattr__ = dict.__getitem__
 
+
+def initialize(msg, **kwds):
+    super(msg.__class__, msg).__init__(**kwds)
+
+
+def serialize(msg):
+    data = bson.dumps(msg)
+    return len(data).to_bytes(4, 'big') + data
+
+
+def send(msg, sock):
+    sock.sendall(msg.serialize())
+
+
+class BaseMessage(type):
+
+    def __new__(cls, name, bases, mems, **kwds):
+        mems['__init__'] = initialize
+        mems['serialize'] = serialize
+        mems['send'] = send
+        return super(BaseMessage, cls).__new__(cls, name, bases, mems)
+
+    def __init__(cls, name, bases, mems, category):
+        super(BaseMessage, cls).__init__(name, bases, mems)
+        cls.category = category
+
+    def __call__(cls, *args, **kwds):
+        kwds['category'] = cls.category.value
+        return super(BaseMessage, cls).__call__(*args, **kwds)
+
 from enum import Enum, unique
 
 
 @unique
-class message_type(str, Enum):
+class category(str, Enum):
     REQ = 'REQ'
     RESP = 'RESP'
     ACK = 'ACK'
     IND = 'IND'
     PUB = 'PUB'
 
-
-class BaseMessage(argdict):
-
-    def __init__(self, mtype, payload):
-        super(BaseMessage, self).__init__()
-        self.type = mtype
-        self.payload = payload
+Message = {e: BaseMessage(e.value, (argdict,), {}, category=e)
+           for e in category}
 
 
-class Indicator(BaseMessage):
-
-    def __init__(self, payload):
-        super(Indicator, self).__init__(message_type.IND, payload=payload)
+def createMessage(buffer):
+    size = int.from_bytes(bytes=buffer[:4], byteorder='big')
+    logging.debug('incomming message size {}'.format(size))
+    try:
+        msg = bson.loads(buffer[4:size + 4])
+    except Exception as e:
+        logging.error('exception: {}'.format(e))
+    return msg, buffer[size + 4:]
 
 
 def handleMessage(address, data):
-    msg = bson.loads(data)
+    msg, _ = createMessage(data)
     logging.critical(
         'message from {}:{} {}'.format(
             address[0], address[1], msg))
@@ -95,7 +123,7 @@ def handleConnection(connection, address, pool):
             'message size {}, buffer size {}'.format(
                 size, len(data)))
         if len(data) >= size + 4:
-            pool.submit(handleMessage, address, data[4:size + 4])
+            pool.submit(handleMessage, address, data)
             data = data[size + 4:]
         data += connection.recv(1024)
     logging.debug('end of listening')
@@ -113,9 +141,7 @@ def runServer(sock, pool):
 def sendMessage(sock, idx, total, msg):
     logging.info('sending msg {} of {}: {}'.format(idx, total, msg))
     try:
-        ind = Indicator(msg)
-        data = bson.dumps(ind)
-        sock.sendall(len(data).to_bytes(4, 'big') + data)
+        msg.send(sock)
     except Exception as e:
         logging.error('caught exception: {0}'.format(e))
     else:
@@ -127,7 +153,13 @@ def runClient(sock, pool):
     logging.info('connecting to {}:{}'.format(args.host, args.port))
     sock.connect((args.host, args.port))
     for idx, msg in enumerate(inmsgs):
-        pool.submit(sendMessage, sock, idx, len(inmsgs), msg)
+        pool.submit(
+            sendMessage,
+            sock,
+            idx,
+            len(inmsgs),
+            Message[category.IND](
+                payload=msg))
     logging.debug('sent all messages')
 
 sock = socket()
