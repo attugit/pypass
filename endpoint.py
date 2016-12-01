@@ -85,30 +85,44 @@ from enum import Enum, unique
 class category(str, Enum):
     REQ = 'REQ'
     RESP = 'RESP'
-    ACK = 'ACK'
     IND = 'IND'
-    PUB = 'PUB'
 
 Message = {e: BaseMessage(e.value, (argdict,), {}, category=e)
            for e in category}
 
 
-def createMessage(buffer):
-    size = int.from_bytes(bytes=buffer[:4], byteorder='big')
-    logging.debug('incomming message size {}'.format(size))
+def readMessage(buff):
     try:
-        msg = bson.loads(buffer[4:size + 4])
+        msg = bson.loads(buff)
     except Exception as e:
         logging.error('exception: {}'.format(e))
-    return msg, buffer[size + 4:]
+    else:
+        logging.debug('read message of size {}'.format(len(buff)))
+    return msg
 
 
-def handleMessage(address, data):
-    msg, _ = createMessage(data)
+def handleMessage(connection, address, msg):
     logging.critical(
         'message from {}:{} {}'.format(
             address[0], address[1], msg))
     sleep(1.0)
+    if msg['category'] == category.REQ:
+        resp = Message[category.RESP](payload={'text': 'thanks'})
+        logging.info('sending resp {}'.format(resp))
+        resp.send(connection)
+
+
+def handleRead(connection, address, pool, data):
+    while len(data) >= 4:
+        size = int.from_bytes(data[:4], 'big')
+        data = data[4:]
+        while len(data) < size:
+            data += connection.recv(1024)
+        ftr = pool.submit(readMessage, data[:size])
+        ftr.add_done_callback(
+            lambda f: handleMessage(
+                connection, address, f.result()))
+        data = data[size:] + connection.recv(1024)
 
 
 def handleConnection(connection, address, pool):
@@ -117,16 +131,15 @@ def handleConnection(connection, address, pool):
             address[0], address[1]))
     data = connection.recv(1024)
     logging.debug('received {} bytes'.format(len(data)))
-    while len(data) >= 4:
-        size = int.from_bytes(data[:4], 'big')
-        logging.debug(
-            'message size {}, buffer size {}'.format(
-                size, len(data)))
-        if len(data) >= size + 4:
-            pool.submit(handleMessage, address, data)
-            data = data[size + 4:]
-        data += connection.recv(1024)
+    handleRead(connection, address, pool, data)
     logging.debug('end of listening')
+
+
+def isDone(ftr):
+    if ftr.done():
+        logging.info('task done')
+    else:
+        logging.info('task failed')
 
 
 def runServer(sock, pool):
@@ -135,13 +148,18 @@ def runServer(sock, pool):
     sock.listen(args.workers)
     while True:
         connection, address = sock.accept()
-        pool.submit(handleConnection, connection, address, pool)
+        ftr = pool.submit(handleConnection, connection, address, pool)
+        ftr.add_done_callback(isDone)
 
 
-def sendMessage(sock, idx, total, msg):
+def sendMessage(sock, address, pool, idx, total, msg):
     logging.info('sending msg {} of {}: {}'.format(idx, total, msg))
     try:
         msg.send(sock)
+        if msg['category'] == category.REQ:
+            logging.debug('expecting resp')
+            data = sock.recv(1024)
+            logging.debug('got resp {}'.format(data))
     except Exception as e:
         logging.error('caught exception: {0}'.format(e))
     else:
@@ -156,10 +174,12 @@ def runClient(sock, pool):
         pool.submit(
             sendMessage,
             sock,
-            idx,
+            (args.host, args.port),
+            pool,
+            idx + 1,
             len(inmsgs),
-            Message[category.IND](
-                payload=msg))
+            Message[msg['category']](
+                payload=msg['payload']))
     logging.debug('sent all messages')
 
 sock = socket()

@@ -1,35 +1,20 @@
 [
   {
-    "text": "Hello1"
+    "category": "REQ",
+    "payload": {
+      "text": "Hello1"
+    }
   },
   {
-    "text": "Hello2"
+    "category": "RESP",
+    "payload": {
+      "text": "Hello2"
+    }
   },
   {
-    "text": "Hello3"
-  },
-  {
-    "text": "Hello4"
-  },
-  {
-    "text": "Hello5"
-  },
-  {
-    "text": "Hello6"
-  },
-  {
-    "text": "Hello7"
-  },
-  {
-    "text": "Hello8"
-  },
-  {
-    "text": "Hello9"
-  },
-  {
-    "text": "Hello0"
-  },
-  {
-    "text": "world!"
+    "category": "IND",
+    "payload": {
+      "text": "Hello3"
+    }
   }
 ]
