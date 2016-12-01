@@ -19,7 +19,7 @@ parser.add_argument('-n', '--workers', type=int, default=os.cpu_count())
 group = parser.add_mutually_exclusive_group(required=True)
 group.add_argument(
     '-s',
-    '--serve',
+    '--server',
     action='store_true')
 group.add_argument(
     '-u',
@@ -91,15 +91,20 @@ Message = {e: BaseMessage(e.value, (argdict,), {}, category=e)
            for e in category}
 
 
+def handleMessage(connection, address, msg):
+    logging.info(
+        'message from {}:{} {}'.format(
+            address[0], address[1], msg['payload']))
+    sleep(3.0)
+
 sock = socket()
 with Executor(max_workers=args.workers) as pool:
-    logging.debug('{} workers started'.format(args.workers))
+    logging.info('{} workers started'.format(args.workers))
 
     def makeMessage(dct):
         return Message[dct['category']](payload=dct['payload'])
 
     def sendMessage(msg):
-        logging.debug('sendMessage {}'.format(sock))
         logging.info(
             'sending to {}:{} {} {}'.format(
                 args.host, args.port, msg['category'], msg['payload']))
@@ -107,24 +112,18 @@ with Executor(max_workers=args.workers) as pool:
             msg.send(sock)
         except Exception as e:
             logging.error('caught exception: {0}'.format(e))
-        else:
-            sleep(2.0)
 
     def runClient():
-        logging.debug('runClient {}'.format(sock))
+        logging.info('running in client mode')
         inmsgs = json.loads(sys.stdin.read())
         logging.info('connecting to {}:{}'.format(args.host, args.port))
         sock.connect((args.host, args.port))
         for msg in inmsgs:
             ftr = pool.submit(sendMessage, makeMessage(msg))
-            ftr.add_done_callback(lambda _: logging.debug('message sent'))
-        logging.debug('sent all messages')
+        logging.info('sent all messages')
 
     def handleConnection(connection, address):
-        logging.debug('handleConnection {} {}'.format(connection, address))
-
         def readUntil(data, size):
-            logging.debug('readUntil {}'.format(connection))
             while len(data) < size:
                 data += connection.recv(1024)
             return data[:size], data[size:]
@@ -134,51 +133,37 @@ with Executor(max_workers=args.workers) as pool:
                 msg = bson.loads(data)
             except Exception as e:
                 logging.error('exception: {}'.format(e))
-            else:
-                logging.debug('read message of size {}'.format(len(data)))
             return msg
 
-        def handleMessage(msg):
-            logging.debug('handleMessage {}'.format(address))
-            logging.info(
-                'message from {}:{} {}'.format(
-                    address[0], address[1], msg))
-            sleep(1.0)
-
         def handleParse(data):
-            logging.debug('handleParse {}'.format(pool))
             size = int.from_bytes(data[:4], 'big')
             data, buff = readUntil(data[4:], size)
             ftr = pool.submit(readMessage, data)
             ftr.add_done_callback(
-                lambda f: handleMessage(f.result()))
+                lambda f: handleMessage(connection, address, f.result()))
             return buff
 
         def handleRead(data):
-            logging.debug('handleRead {}'.format(connection))
             while len(data) >= 4:
                 data = handleParse(data)
                 data += connection.recv(1024)
 
-        logging.debug(
+        logging.info(
             'connection from {}:{} accepted'.format(
                 address[0], address[1]))
         data = connection.recv(1024)
-        logging.debug('received {} bytes'.format(len(data)))
-        handleRead(data)
+        pool.submit(handleRead, data)
 
     def runServer():
+        logging.info('running in server mode')
         logging.info('binding to {}:{}'.format(args.host, args.port))
         sock.bind((args.host, args.port))
         sock.listen(args.workers)
         while True:
             connection, address = sock.accept()
-            ftr = pool.submit(handleConnection, connection, address)
-            ftr.add_done_callback(lambda _: logging.debug('end of listening'))
+            pool.submit(handleConnection, connection, address)
 
-    if args.serve:
-        logging.info('running in server mode')
+    if args.server:
         runServer()
     elif args.client:
-        logging.info('running in client mode')
         runClient()

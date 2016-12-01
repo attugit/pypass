@@ -16,5 +16,23 @@
     "payload": {
       "text": "Hello3"
     }
+  },
+  {
+    "category": "REQ",
+    "payload": {
+      "text": "Hello4"
+    }
+  },
+  {
+    "category": "RESP",
+    "payload": {
+      "text": "Hello5"
+    }
+  },
+  {
+    "category": "IND",
+    "payload": {
+      "text": "Hello6"
+    }
   }
 ]
