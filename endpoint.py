@@ -91,103 +91,94 @@ Message = {e: BaseMessage(e.value, (argdict,), {}, category=e)
            for e in category}
 
 
-def readMessage(buff):
-    try:
-        msg = bson.loads(buff)
-    except Exception as e:
-        logging.error('exception: {}'.format(e))
-    else:
-        logging.debug('read message of size {}'.format(len(buff)))
-    return msg
-
-
-def handleMessage(connection, address, msg):
-    logging.critical(
-        'message from {}:{} {}'.format(
-            address[0], address[1], msg))
-    sleep(1.0)
-    if msg['category'] == category.REQ:
-        resp = Message[category.RESP](payload={'text': 'thanks'})
-        logging.info('sending resp {}'.format(resp))
-        resp.send(connection)
-
-
-def handleRead(connection, address, pool, data):
-    while len(data) >= 4:
-        size = int.from_bytes(data[:4], 'big')
-        data = data[4:]
-        while len(data) < size:
-            data += connection.recv(1024)
-        ftr = pool.submit(readMessage, data[:size])
-        ftr.add_done_callback(
-            lambda f: handleMessage(
-                connection, address, f.result()))
-        data = data[size:] + connection.recv(1024)
-
-
-def handleConnection(connection, address, pool):
-    logging.debug(
-        'connection from {}:{} accepted'.format(
-            address[0], address[1]))
-    data = connection.recv(1024)
-    logging.debug('received {} bytes'.format(len(data)))
-    handleRead(connection, address, pool, data)
-    logging.debug('end of listening')
-
-
-def isDone(ftr):
-    if ftr.done():
-        logging.info('task done')
-    else:
-        logging.info('task failed')
-
-
-def runServer(sock, pool):
-    logging.info('binding to {}:{}'.format(args.host, args.port))
-    sock.bind((args.host, args.port))
-    sock.listen(args.workers)
-    while True:
-        connection, address = sock.accept()
-        ftr = pool.submit(handleConnection, connection, address, pool)
-        ftr.add_done_callback(isDone)
-
-
-def sendMessage(sock, address, pool, idx, total, msg):
-    logging.info('sending msg {} of {}: {}'.format(idx, total, msg))
-    try:
-        msg.send(sock)
-        if msg['category'] == category.REQ:
-            logging.debug('expecting resp')
-            data = sock.recv(1024)
-            logging.debug('got resp {}'.format(data))
-    except Exception as e:
-        logging.error('caught exception: {0}'.format(e))
-    else:
-        sleep(2.0)
-
-
-def runClient(sock, pool):
-    inmsgs = json.loads(sys.stdin.read())
-    logging.info('connecting to {}:{}'.format(args.host, args.port))
-    sock.connect((args.host, args.port))
-    for idx, msg in enumerate(inmsgs):
-        pool.submit(
-            sendMessage,
-            sock,
-            (args.host, args.port),
-            pool,
-            idx + 1,
-            len(inmsgs),
-            Message[msg['category']](
-                payload=msg['payload']))
-    logging.debug('sent all messages')
-
 sock = socket()
 with Executor(max_workers=args.workers) as pool:
     logging.debug('{} workers started'.format(args.workers))
+
+    def makeMessage(dct):
+        return Message[dct['category']](payload=dct['payload'])
+
+    def sendMessage(msg):
+        logging.debug('sendMessage {}'.format(sock))
+        logging.info(
+            'sending to {}:{} {} {}'.format(
+                args.host, args.port, msg['category'], msg['payload']))
+        try:
+            msg.send(sock)
+        except Exception as e:
+            logging.error('caught exception: {0}'.format(e))
+        else:
+            sleep(2.0)
+
+    def runClient():
+        logging.debug('runClient {}'.format(sock))
+        inmsgs = json.loads(sys.stdin.read())
+        logging.info('connecting to {}:{}'.format(args.host, args.port))
+        sock.connect((args.host, args.port))
+        for msg in inmsgs:
+            ftr = pool.submit(sendMessage, makeMessage(msg))
+            ftr.add_done_callback(lambda _: logging.debug('message sent'))
+        logging.debug('sent all messages')
+
+    def handleConnection(connection, address):
+        logging.debug('handleConnection {} {}'.format(connection, address))
+
+        def readUntil(data, size):
+            logging.debug('readUntil {}'.format(connection))
+            while len(data) < size:
+                data += connection.recv(1024)
+            return data[:size], data[size:]
+
+        def readMessage(data):
+            try:
+                msg = bson.loads(data)
+            except Exception as e:
+                logging.error('exception: {}'.format(e))
+            else:
+                logging.debug('read message of size {}'.format(len(data)))
+            return msg
+
+        def handleMessage(msg):
+            logging.debug('handleMessage {}'.format(address))
+            logging.info(
+                'message from {}:{} {}'.format(
+                    address[0], address[1], msg))
+            sleep(1.0)
+
+        def handleParse(data):
+            logging.debug('handleParse {}'.format(pool))
+            size = int.from_bytes(data[:4], 'big')
+            data, buff = readUntil(data[4:], size)
+            ftr = pool.submit(readMessage, data)
+            ftr.add_done_callback(
+                lambda f: handleMessage(f.result()))
+            return buff
+
+        def handleRead(data):
+            logging.debug('handleRead {}'.format(connection))
+            while len(data) >= 4:
+                data = handleParse(data)
+                data += connection.recv(1024)
+
+        logging.debug(
+            'connection from {}:{} accepted'.format(
+                address[0], address[1]))
+        data = connection.recv(1024)
+        logging.debug('received {} bytes'.format(len(data)))
+        handleRead(data)
+
+    def runServer():
+        logging.info('binding to {}:{}'.format(args.host, args.port))
+        sock.bind((args.host, args.port))
+        sock.listen(args.workers)
+        while True:
+            connection, address = sock.accept()
+            ftr = pool.submit(handleConnection, connection, address)
+            ftr.add_done_callback(lambda _: logging.debug('end of listening'))
+
     if args.serve:
         logging.info('running in server mode')
-        runServer(sock, pool)
+        runServer()
     elif args.client:
         logging.info('running in client mode')
-        runClient(sock, pool)
+        runClient()
